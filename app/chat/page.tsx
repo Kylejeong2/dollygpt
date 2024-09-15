@@ -1,61 +1,82 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useUser, RedirectToSignIn } from '@clerk/nextjs'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useChat } from 'ai/react'
-import { supabase } from '@/lib/supabase'
+import { db } from '@/db'
+import { messages, chats } from '@/db/schema'
+import { v4 as uuidv4 } from 'uuid';
 
 export default function DollyChat() {
-  const { user } = useUser()
+  const { user, isLoaded, isSignedIn } = useUser()
   const [model, setModel] = useState('o1-preview')
-  const { messages, input, handleInputChange, handleSubmit, setMessages } = useChat({
+  const [chatId, setChatId] = useState<string | null>(null)
+  const { messages: chatMessages, input, handleInputChange, handleSubmit, setMessages } = useChat({
     api: '/api/chat',
-    body: { model },
+    body: { model, chatId },
     onFinish: async (message) => {
-      await saveMessageToSupabase(message)
+      await saveMessageToDatabase(message)
     },
   })
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    if (isLoaded && !isSignedIn) {
+      return <RedirectToSignIn />;
+    }
+
+    const initializeChat = async () => {
+      if (user) {
+        const newChatId = uuidv4();
+        await db.insert(chats).values({
+          id: newChatId,
+          userId: user.id,
+          title: 'New Chat',
+        });
+        setChatId(newChatId);
+      }
+    };
+
+    initializeChat();
+  }, [isLoaded, isSignedIn, user]);
+
+  useEffect(() => {
     const fetchMessages = async () => {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .order('created_at', { ascending: true })
-      
-      if (error) {
-        console.error('Error fetching messages:', error)
-      } else {
-        setMessages(data)
+      if (chatId) {
+        const fetchedMessages = await db.select().from(messages).where(eq(messages.chatId, chatId));
+        setMessages(fetchedMessages);
       }
     }
 
     fetchMessages()
-  }, [])
+  }, [chatId])
 
   useEffect(() => {
     if (scrollAreaRef.current) {
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight
     }
-  }, [messages])
+  }, [chatMessages])
 
-  const saveMessageToSupabase = async (message: any) => {
-    const { error } = await supabase
-      .from('messages')
-      .insert({ content: message.content, role: message.role })
-    
-    if (error) {
-      console.error('Error saving message:', error)
+  const saveMessageToDatabase = async (message: any) => {
+    if (chatId) {
+      await db.insert(messages).values({
+        chatId,
+        role: message.role,
+        content: message.content,
+      });
     }
   }
 
   const handleModelChange = (newModel: string) => {
     setModel(newModel)
+  }
+
+  if (!isLoaded || !isSignedIn) {
+    return null; // or a loading spinner
   }
 
   return (
@@ -71,7 +92,7 @@ export default function DollyChat() {
               <AvatarImage src={user?.profileImageUrl} />
               <AvatarFallback>DP</AvatarFallback>
             </Avatar>
-            <h1 className="text-2xl font-bold">DollyGPT - Physics Assistant</h1>
+            <h1 className="text-2xl font-bold">DollyGPT - Physics & Chemistry Assistant</h1>
           </div>
           <div className="flex space-x-2">
             <Button
@@ -89,7 +110,7 @@ export default function DollyChat() {
           </div>
         </header>
         <ScrollArea className="flex-grow p-4" ref={scrollAreaRef}>
-          {messages.map((message, index) => (
+          {chatMessages.map((message, index) => (
             <div key={index} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}>
               <div className={`rounded-lg p-2 max-w-[70%] ${
                 message.role === 'user' 
@@ -106,7 +127,7 @@ export default function DollyChat() {
             <Input 
               value={input} 
               onChange={handleInputChange}
-              placeholder="Ask a physics question..."
+              placeholder="Ask a physics or chemistry question..."
               className="flex-grow bg-white"
             />
             <Button type="submit" className="bg-purple-600 hover:bg-purple-700 text-white">Send</Button>
